@@ -20,6 +20,9 @@ import android.graphics.BitmapFactory;
 import android.opengl.GLES20;
 import android.opengl.GLUtils;
 import android.opengl.Matrix;
+
+import com.google.ar.core.AugmentedFace;
+
 import de.javagl.obj.Obj;
 import de.javagl.obj.ObjData;
 import de.javagl.obj.ObjReader;
@@ -94,7 +97,7 @@ public class ObjectRenderer {
   // Shader location: object color property (to change the primary color of the object).
   private int colorUniform;
 
-  private BlendMode blendMode = null;
+  private BlendMode blendMode = BlendMode.Grid;
 
   // Temporary matrices allocated here to reduce number of allocations for each frame.
   private final float[] modelMatrix = new float[16];
@@ -107,16 +110,17 @@ public class ObjectRenderer {
   private float specular = 1.0f;
   private float specularPower = 6.0f;
 
+  private boolean objectLoaded = false;
+
   public ObjectRenderer() {}
 
   /**
    * Creates and initializes OpenGL resources needed for rendering the model.
    *
    * @param context Context for loading the shader and below-named model and texture assets.
-   * @param objAssetName Name of the OBJ file containing the model geometry.
    * @param diffuseTextureAssetName Name of the PNG file containing the diffuse texture map.
    */
-  public void createOnGlThread(Context context, String objAssetName, String diffuseTextureAssetName)
+  public void createOnGlThread(Context context, String diffuseTextureAssetName)
       throws IOException {
     final int vertexShader =
         ShaderUtil.loadGLShader(TAG, context, GLES20.GL_VERTEX_SHADER, VERTEX_SHADER_NAME);
@@ -164,44 +168,24 @@ public class ObjectRenderer {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0);
 
     textureBitmap.recycle();
-
     ShaderUtil.checkGLError(TAG, "Texture loading");
-
-    // Read the obj file.
-    InputStream objInputStream = context.getAssets().open(objAssetName);
-    Obj obj = ObjReader.read(objInputStream);
-
-    // Prepare the Obj so that its structure is suitable for
-    // rendering with OpenGL:
-    // 1. Triangulate it
-    // 2. Make sure that texture coordinates are not ambiguous
-    // 3. Make sure that normals are not ambiguous
-    // 4. Convert it to single-indexed data
-    obj = ObjUtils.convertToRenderable(obj);
-
-    // OpenGL does not use Java arrays. ByteBuffers are used instead to provide data in a format
-    // that OpenGL understands.
-
-    // Obtain the data from the OBJ, as direct buffers:
-    IntBuffer wideIndices = ObjData.getFaceVertexIndices(obj, 3);
-    FloatBuffer vertices = ObjData.getVertices(obj);
-    FloatBuffer texCoords = ObjData.getTexCoords(obj, 2);
-    FloatBuffer normals = ObjData.getNormals(obj);
-
-    // Convert int indices to shorts for GL ES 2.0 compatibility
-    ShortBuffer indices =
-        ByteBuffer.allocateDirect(2 * wideIndices.limit())
-            .order(ByteOrder.nativeOrder())
-            .asShortBuffer();
-    while (wideIndices.hasRemaining()) {
-      indices.put((short) wideIndices.get());
-    }
-    indices.rewind();
 
     int[] buffers = new int[2];
     GLES20.glGenBuffers(2, buffers, 0);
     vertexBufferId = buffers[0];
     indexBufferId = buffers[1];
+
+    Matrix.setIdentityM(modelMatrix, 0);
+  }
+
+  public void setToAugmentedFace(AugmentedFace face) {
+    // Obtain the data from the OBJ, as direct buffers:
+    FloatBuffer vertices = face.getMeshVertices();
+    FloatBuffer texCoords = face.getMeshTextureCoordinates();
+    FloatBuffer normals = face.getMeshNormals();
+
+    // Convert int indices to shorts for GL ES 2.0 compatibility
+    ShortBuffer indices = face.getMeshTriangleIndices();
 
     // Load vertex buffer
     verticesBaseAddress = 0;
@@ -212,23 +196,24 @@ public class ObjectRenderer {
     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vertexBufferId);
     GLES20.glBufferData(GLES20.GL_ARRAY_BUFFER, totalBytes, null, GLES20.GL_STATIC_DRAW);
     GLES20.glBufferSubData(
-        GLES20.GL_ARRAY_BUFFER, verticesBaseAddress, 4 * vertices.limit(), vertices);
+            GLES20.GL_ARRAY_BUFFER, verticesBaseAddress, 4 * vertices.limit(), vertices);
     GLES20.glBufferSubData(
-        GLES20.GL_ARRAY_BUFFER, texCoordsBaseAddress, 4 * texCoords.limit(), texCoords);
+            GLES20.GL_ARRAY_BUFFER, texCoordsBaseAddress, 4 * texCoords.limit(), texCoords);
     GLES20.glBufferSubData(
-        GLES20.GL_ARRAY_BUFFER, normalsBaseAddress, 4 * normals.limit(), normals);
+            GLES20.GL_ARRAY_BUFFER, normalsBaseAddress, 4 * normals.limit(), normals);
     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0);
 
     // Load index buffer
     GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, indexBufferId);
     indexCount = indices.limit();
     GLES20.glBufferData(
-        GLES20.GL_ELEMENT_ARRAY_BUFFER, 2 * indexCount, indices, GLES20.GL_STATIC_DRAW);
+            GLES20.GL_ELEMENT_ARRAY_BUFFER, 2 * indexCount, indices, GLES20.GL_STATIC_DRAW);
     GLES20.glBindBuffer(GLES20.GL_ELEMENT_ARRAY_BUFFER, 0);
 
     ShaderUtil.checkGLError(TAG, "OBJ buffer load");
 
     Matrix.setIdentityM(modelMatrix, 0);
+    objectLoaded = true;
   }
 
   /**
@@ -278,8 +263,6 @@ public class ObjectRenderer {
    *
    * @param cameraView A 4x4 view matrix, in column-major order.
    * @param cameraPerspective A 4x4 projection matrix, in column-major order.
-   * @param lightIntensity Illumination intensity. Combined with diffuse and specular material
-   *     properties.
    * @see #setBlendMode(BlendMode)
    * @see #updateModelMatrix(float[], float)
    * @see #setMaterialProperties(float, float, float, float)
@@ -294,6 +277,8 @@ public class ObjectRenderer {
       float[] cameraPerspective,
       float[] colorCorrectionRgba,
       float[] objColor) {
+
+    if (!objectLoaded) return;
 
     ShaderUtil.checkGLError(TAG, "Before draw");
 
@@ -325,6 +310,8 @@ public class ObjectRenderer {
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textures[0]);
     GLES20.glUniform1i(textureUniform, 0);
+    GLES20.glCullFace(GLES20.GL_FRONT);
+    GLES20.glEnable(GLES20.GL_CULL_FACE);
 
     // Set the vertex attributes.
     GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, vertexBufferId);
@@ -347,7 +334,7 @@ public class ObjectRenderer {
     GLES20.glEnableVertexAttribArray(texCoordAttribute);
 
     if (blendMode != null) {
-      GLES20.glDepthMask(false);
+      //GLES20.glDepthMask(false);
       GLES20.glEnable(GLES20.GL_BLEND);
       switch (blendMode) {
         case Shadow:
@@ -367,8 +354,10 @@ public class ObjectRenderer {
 
     if (blendMode != null) {
       GLES20.glDisable(GLES20.GL_BLEND);
-      GLES20.glDepthMask(true);
+      //GLES20.glDepthMask(true);
     }
+
+    GLES20.glDisable(GLES20.GL_CULL_FACE);
 
     // Disable vertex arrays
     GLES20.glDisableVertexAttribArray(positionAttribute);

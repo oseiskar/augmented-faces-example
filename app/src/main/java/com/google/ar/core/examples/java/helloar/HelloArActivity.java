@@ -199,7 +199,7 @@ public class HelloArActivity extends AppCompatActivity implements GLSurfaceView.
       // Create the texture and pass it to ARCore session to be filled during update().
       backgroundRenderer.createOnGlThread(/*context=*/ this);
 
-      virtualObject.createOnGlThread(/*context=*/ this, "models/andy.obj", "models/andy.png");
+      virtualObject.createOnGlThread(/*context=*/ this,  "models/face-texture.png");
       virtualObject.setMaterialProperties(0.0f, 2.0f, 0.5f, 6.0f);
 
     } catch (IOException e) {
@@ -252,14 +252,13 @@ public class HelloArActivity extends AppCompatActivity implements GLSurfaceView.
       frame.getLightEstimate().getColorCorrection(colorCorrectionRgba, 0);
 
       for (AugmentedFace face : session.getAllTrackables(AugmentedFace.class)) {
-        float scaleFactor = 0.25f;
+        virtualObject.setToAugmentedFace(face);
         float[] color4f = { 1f, 1f, 1f, 1f };
 
-        face.getRegionPose(AugmentedFace.RegionType.NOSE_TIP)
-                .toMatrix(anchorMatrix, 0);
+        face.getCenterPose().toMatrix(anchorMatrix, 0);
 
         // Update and draw the model and its shadow.
-        virtualObject.updateModelMatrix(anchorMatrix, scaleFactor);
+        virtualObject.updateModelMatrix(anchorMatrix, 1f);
         virtualObject.draw(viewmtx, projmtx, colorCorrectionRgba, color4f);
       }
 
